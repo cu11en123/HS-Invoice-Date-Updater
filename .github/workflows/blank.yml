@@ -7,7 +7,7 @@ on:
     branches: ["main"]
   workflow_dispatch: {}
   schedule:
-    - cron: "1 5 * * *"   # runs daily at 05:01 UTC -> 12:01 AM EST (fixed UTC-5)
+    - cron: "1 5 * * *"   # runs daily at 05:01 UTC -> 12:01 AM EST
 
 jobs:
   build:
@@ -21,10 +21,7 @@ jobs:
         with:
           node-version: "18"
 
-      - name: Install dependencies
-        run: npm install
-
       - name: Run invoice update script
         env:
-          HUBSPOT_API_KEY: ${{ secrets.HUBSPOT_API_KEY }}
-        run: node your-script.js
+          HS: ${{ secrets.HUBSPOT_API_KEY }}
+        run: node update-invoice-dates.js
