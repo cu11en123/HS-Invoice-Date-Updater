@@ -23,5 +23,5 @@ jobs:
 
       - name: Run invoice update script
         env:
-          HS: ${{ secrets.HUBSPOT_API_KEY }}
+          HS: ${{ secrets.HS }}
         run: node .github/workflows/update-invoice-dates.js
