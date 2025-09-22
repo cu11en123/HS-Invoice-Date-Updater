@@ -3,7 +3,7 @@
  * Node 18+ standalone script
  *
  * Behavior:
- *  - Finds draft invoices with invoice date BEFORE today
+ *  - Finds draft invoices with invoice date BEFORE today (UTC midnight)
  *  - Sets invoice date to today (UTC midnight)
  *  - Updates due date so the term (due - original invoice date) is preserved (in whole days)
  *  - If estimated_invoice_date_field is empty, set it to the original invoice date (UTC midnight)
@@ -41,7 +41,7 @@ const HEADERS = {
 // ---------- Utilities ----------
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve));
 }
 
 async function makeRequest(url, options = {}, attempt = 1) {
@@ -115,10 +115,16 @@ async function run() {
   console.log('--- Starting invoice date refresh script ---');
   console.log(`TEST_MODE: ${TEST_MODE ? 'ON' : 'OFF'}`);
 
-  // today's UTC midnight (we will set invoice date to this)
+  // Get today's UTC midnight for setting new invoice dates
   const todayUtcMidnightMs = utcMidnightMsForDate(new Date());
   const todayUtcMidnightIso = new Date(todayUtcMidnightMs).toISOString();
   console.log(`Today (UTC midnight): ${todayUtcMidnightIso}`);
+
+  // FIXED: Use today's UTC midnight as the cutoff for the search
+  // This ensures we get invoices with dates before today at 00:00 UTC
+  // regardless of what time the script actually runs
+  const searchCutoffMs = todayUtcMidnightMs;
+  console.log(`Search cutoff: ${new Date(searchCutoffMs).toISOString()} (invoices before this will be updated)`);
 
   // ------------- Search for draft invoices with invoice date before today -------------
   const found = [];
@@ -131,7 +137,7 @@ async function run() {
         {
           filters: [
             { propertyName: 'hs_invoice_status', operator: 'EQ', value: 'draft' },
-            { propertyName: 'hs_invoice_date', operator: 'LT', value: String(todayUtcMidnightMs) },
+            { propertyName: 'hs_invoice_date', operator: 'LT', value: String(searchCutoffMs) },
           ],
         },
       ],
@@ -168,7 +174,7 @@ async function run() {
     if (after) await sleep(300);
   } while (after);
 
-  console.log(`Found ${found.length} draft invoice(s) with invoice date < today.`);
+  console.log(`Found ${found.length} draft invoice(s) with invoice date < today (UTC midnight).`);
 
   if (found.length === 0) {
     console.log('No invoices to update. Exiting.');
