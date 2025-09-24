@@ -18,7 +18,7 @@
  * Note: This script expects Node 18+ (global fetch available).
  */
 
-const TEST_MODE = true;            // keep as true per your request
+const TEST_MODE = false;            // keep as true per your request
 const TEST_INVOICE_LIMIT = 1;      // how many to process in test mode
 const HUBSPOT_BASE = 'https://api.hubapi.com';
 const SEARCH_URL = `${HUBSPOT_BASE}/crm/v3/objects/invoices/search`;
