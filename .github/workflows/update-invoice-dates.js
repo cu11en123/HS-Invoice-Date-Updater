@@ -18,12 +18,13 @@
  * Note: This script expects Node 18+ (global fetch available).
  */
 
-const TEST_MODE = false;            // keep as true per your request
-const TEST_INVOICE_LIMIT = 1;      // how many to process in test mode
+const TEST_MODE = false;            // set to true to test on a single invoice
+const TEST_INVOICE_LIMIT = 1;       // how many to process in test mode
 const HUBSPOT_BASE = 'https://api.hubapi.com';
 const SEARCH_URL = `${HUBSPOT_BASE}/crm/v3/objects/invoices/search`;
 const UPDATE_URL = `${HUBSPOT_BASE}/crm/v3/objects/invoices/batch/update`;
 const MAX_BATCH = 100;             // HubSpot supports up to 100 per batch
+const DEFAULT_SAFE_BATCH = 20;     // safer default to reduce HubSpot internal errors
 
 // Read HubSpot key from env var named "HS"
 const HUBSPOT_KEY = process.env.HS;
@@ -41,7 +42,7 @@ const HEADERS = {
 // ---------- Utilities ----------
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function makeRequest(url, options = {}, attempt = 1) {
@@ -121,8 +122,6 @@ async function run() {
   console.log(`Today (UTC midnight): ${todayUtcMidnightIso}`);
 
   // FIXED: Use today's UTC midnight as the cutoff for the search
-  // This ensures we get invoices with dates before today at 00:00 UTC
-  // regardless of what time the script actually runs
   const searchCutoffMs = todayUtcMidnightMs;
   console.log(`Search cutoff: ${new Date(searchCutoffMs).toISOString()} (invoices before this will be updated)`);
 
@@ -137,7 +136,8 @@ async function run() {
         {
           filters: [
             { propertyName: 'hs_invoice_status', operator: 'EQ', value: 'draft' },
-            { propertyName: 'hs_invoice_date', operator: 'LT', value: String(searchCutoffMs) },
+            // Send numeric epoch ms for date comparisons
+            { propertyName: 'hs_invoice_date', operator: 'LT', value: searchCutoffMs },
           ],
         },
       ],
@@ -153,6 +153,13 @@ async function run() {
       method: 'POST',
       headers: HEADERS,
       body: payload,
+    });
+
+    // Debug logging to show what the API returned for this page
+    console.log('searchRes summary:', {
+      results: Array.isArray(searchRes.results) ? searchRes.results.length : 0,
+      hasNext: !!searchRes.paging?.next,
+      after: searchRes.paging?.next?.after,
     });
 
     if (Array.isArray(searchRes.results)) {
@@ -175,6 +182,14 @@ async function run() {
   } while (after);
 
   console.log(`Found ${found.length} draft invoice(s) with invoice date < today (UTC midnight).`);
+  if (found.length > 0) {
+    const simpleFound = found.map((f) => ({
+      id: f.id,
+      hs_number: f.properties?.hs_number,
+      hs_invoice_date: f.properties?.hs_invoice_date,
+    }));
+    console.log('Found invoices (id, hs_number, hs_invoice_date):', simpleFound);
+  }
 
   if (found.length === 0) {
     console.log('No invoices to update. Exiting.');
@@ -186,7 +201,7 @@ async function run() {
     };
   }
 
-  // ------------- Build update payloads -------------
+  // ------------- Build update payloads (send epoch ms for date properties) -------------
   const updates = found.map((inv) => {
     const id = inv.id;
     const props = inv.properties || {};
@@ -204,20 +219,19 @@ async function run() {
     const termDays = Math.round(termMs / (24 * 3600 * 1000)); // integer days
 
     const newDueMs = todayUtcMidnightMs + termDays * 24 * 3600 * 1000;
-    const newDueIso = new Date(newDueMs).toISOString();
-
-    const newInvoiceIso = new Date(todayUtcMidnightMs).toISOString();
+    const newInvoiceMs = todayUtcMidnightMs; // epoch ms for today at UTC midnight
 
     const estimatedFilled = props.estimated_invoice_date_field && String(props.estimated_invoice_date_field).trim() !== '';
 
     const newProps = {
-      hs_invoice_date: newInvoiceIso,
-      hs_due_date: newDueIso,
+      // send epoch ms (numbers) for HubSpot date properties
+      hs_invoice_date: newInvoiceMs,
+      hs_due_date: newDueMs,
     };
 
     if (!estimatedFilled) {
-      const estIso = new Date(origInvMidMs).toISOString();
-      newProps.estimated_invoice_date_field = estIso;
+      // store original invoice date as epoch ms
+      newProps.estimated_invoice_date_field = origInvMidMs;
     }
 
     return {
@@ -227,11 +241,21 @@ async function run() {
   });
 
   console.log(`Prepared ${updates.length} invoice update payload(s).`);
+  // For debugging, list ids and new date ms values (do not print full payload for privacy)
+  console.log(
+    'Prepared updates (id, hs_invoice_date_ms, hs_due_date_ms, estimated_invoice_date_field_ms if set):',
+    updates.map((u) => ({
+      id: u.id,
+      hs_invoice_date: u.properties.hs_invoice_date,
+      hs_due_date: u.properties.hs_due_date,
+      estimated_invoice_date_field: u.properties.estimated_invoice_date_field,
+    }))
+  );
 
   // ------------- Batch update -------------
   const errors = [];
   let successCount = 0;
-  const batchSize = Math.min(MAX_BATCH, TEST_MODE ? updates.length : MAX_BATCH);
+  const batchSize = TEST_MODE ? updates.length : Math.min(MAX_BATCH, DEFAULT_SAFE_BATCH);
 
   for (let i = 0; i < updates.length; i += batchSize) {
     const chunk = updates.slice(i, i + batchSize);
@@ -260,7 +284,14 @@ async function run() {
         console.log(`Batch ${batchNum} updated (no detailed results returned).`);
       }
     } catch (err) {
-      console.error(`Error updating batch ${batchNum}: ${err.message || err}`);
+      console.error(`Error updating batch ${batchNum}:`, err && err.message ? err.message : err);
+      // Attempt to tease out correlationId if present in the thrown error snippet
+      try {
+        const m = String(err).match(/"correlationId"\s*:\s*"([0-9a-fA-F-]+)"/);
+        if (m) console.error('HubSpot correlationId (from error):', m[1]);
+      } catch (e) {
+        // ignore parse failures
+      }
       errors.push({
         batch: batchNum,
         error: err.message || String(err),
