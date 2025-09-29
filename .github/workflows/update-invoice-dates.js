@@ -3,10 +3,10 @@
  * Node 18+ standalone script
  *
  * Behavior:
- *  - Finds draft invoices with invoice date BEFORE today (UTC midnight)
- *  - Sets invoice date to today (UTC midnight)
+ *  - Finds draft invoices with invoice date BEFORE today (7:00 PM UTC)
+ *  - Sets invoice date to today (7:00 PM UTC)
  *  - Updates due date so the term (due - original invoice date) is preserved (in whole days)
- *  - If estimated_invoice_date_field is empty, set it to the original invoice date (UTC midnight)
+ *  - If estimated_invoice_date_field is empty, set it to the original invoice date (aligned to 7:00 PM UTC)
  *
  * Config:
  *  - TEST_MODE = true (keeps behavior same as requested)
@@ -82,12 +82,16 @@ async function makeRequest(url, options = {}, attempt = 1) {
   }
 }
 
-function utcMidnightMsForDate(d = new Date()) {
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+// Return milliseconds for 7:00 PM UTC on the given date (defaults to now)
+function utc7pmMsForDate(d = new Date()) {
+  // base is UTC midnight of that date
+  const base = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  // add 19 hours => 7:00 PM UTC
+  return base + 19 * 3600 * 1000;
 }
 
-function utcMidnightIsoForDate(d = new Date()) {
-  const ms = utcMidnightMsForDate(d);
+function utc7pmIsoForDate(d = new Date()) {
+  const ms = utc7pmMsForDate(d);
   return new Date(ms).toISOString();
 }
 
@@ -105,9 +109,10 @@ function parseHubspotDate(value) {
   return null;
 }
 
-function toUtcMidnightMs(d) {
+// Convert a Date (or date-like) to the day's 7:00 PM UTC ms
+function toUtc7pmMs(d) {
   const date = new Date(d);
-  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) + 19 * 3600 * 1000;
 }
 
 // ---------- Main flow ----------
@@ -116,13 +121,15 @@ async function run() {
   console.log('--- Starting invoice date refresh script ---');
   console.log(`TEST_MODE: ${TEST_MODE ? 'ON' : 'OFF'}`);
 
-  // Get today's UTC midnight for setting new invoice dates
-  const todayUtcMidnightMs = utcMidnightMsForDate(new Date());
-  const todayUtcMidnightIso = new Date(todayUtcMidnightMs).toISOString();
-  console.log(`Today (UTC midnight): ${todayUtcMidnightIso}`);
+  const DAY_MS = 24 * 3600 * 1000;
 
-  // FIXED: Use today's UTC midnight as the cutoff for the search
-  const searchCutoffMs = todayUtcMidnightMs;
+  // Get today's 7 PM UTC for setting new invoice dates
+  const todayUtc7pmMs = utc7pmMsForDate(new Date());
+  const todayUtc7pmIso = new Date(todayUtc7pmMs).toISOString();
+  console.log(`Today (7:00 PM UTC): ${todayUtc7pmIso}`);
+
+  // Use today's 7 PM UTC as the cutoff for the search
+  const searchCutoffMs = todayUtc7pmMs;
   console.log(`Search cutoff: ${new Date(searchCutoffMs).toISOString()} (invoices before this will be updated)`);
 
   // ------------- Search for draft invoices with invoice date before today -------------
@@ -181,7 +188,7 @@ async function run() {
     if (after) await sleep(300);
   } while (after);
 
-  console.log(`Found ${found.length} draft invoice(s) with invoice date < today (UTC midnight).`);
+  console.log(`Found ${found.length} draft invoice(s) with invoice date < ${new Date(searchCutoffMs).toISOString()}.`);
   if (found.length > 0) {
     const simpleFound = found.map((f) => ({
       id: f.id,
@@ -196,7 +203,7 @@ async function run() {
     return {
       updated: 0,
       total: 0,
-      dateSet: todayUtcMidnightIso.slice(0, 10),
+      dateSet: new Date(todayUtc7pmMs).toISOString().slice(0, 10),
       errors: undefined,
     };
   }
@@ -209,17 +216,18 @@ async function run() {
     const origInvRaw = props.hs_invoice_date || null;
     const origDueRaw = props.hs_due_date || null;
 
-    const origInvDate = parseHubspotDate(origInvRaw) || new Date(todayUtcMidnightMs);
-    const origDueDate = parseHubspotDate(origDueRaw) || new Date(toUtcMidnightMs(origInvDate) + 24 * 3600 * 1000);
+    // parseHubspotDate returns a Date or null
+    const origInvDate = parseHubspotDate(origInvRaw) || new Date(todayUtc7pmMs);
+    const origDueDate = parseHubspotDate(origDueRaw) || new Date(toUtc7pmMs(origInvDate) + DAY_MS);
 
-    const origInvMidMs = toUtcMidnightMs(origInvDate);
-    const origDueMidMs = toUtcMidnightMs(origDueDate);
+    const origInvMidMs = toUtc7pmMs(origInvDate);
+    const origDueMidMs = toUtc7pmMs(origDueDate);
 
     const termMs = Math.max(origDueMidMs - origInvMidMs, 0);
-    const termDays = Math.round(termMs / (24 * 3600 * 1000)); // integer days
+    const termDays = Math.round(termMs / DAY_MS); // integer days
 
-    const newDueMs = todayUtcMidnightMs + termDays * 24 * 3600 * 1000;
-    const newInvoiceMs = todayUtcMidnightMs; // epoch ms for today at UTC midnight
+    const newDueMs = todayUtc7pmMs + termDays * DAY_MS;
+    const newInvoiceMs = todayUtc7pmMs; // epoch ms for today at 7:00 PM UTC
 
     const estimatedFilled = props.estimated_invoice_date_field && String(props.estimated_invoice_date_field).trim() !== '';
 
@@ -230,7 +238,7 @@ async function run() {
     };
 
     if (!estimatedFilled) {
-      // store original invoice date as epoch ms
+      // store original invoice date (aligned to 7:00 PM UTC) as epoch ms
       newProps.estimated_invoice_date_field = origInvMidMs;
     }
 
@@ -305,7 +313,7 @@ async function run() {
   const summary = {
     updated: successCount,
     total: updates.length,
-    dateSet: new Date(todayUtcMidnightMs).toISOString().slice(0, 10),
+    dateSet: new Date(todayUtc7pmMs).toISOString().slice(0, 10),
     errors: errors.length ? errors : undefined,
     successRate: updates.length ? `${Math.round((successCount / updates.length) * 100)}%` : '0%',
   };
