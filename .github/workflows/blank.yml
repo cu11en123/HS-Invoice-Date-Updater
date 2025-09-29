@@ -1,13 +1,9 @@
 name: Update HubSpot Invoices
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
   workflow_dispatch: {}
   schedule:
-    - cron: "1 5 * * *"   # runs daily at 05:01 UTC -> 12:01 AM EST
+    - cron: "1 4 * * *"   # runs daily at 04:01 UTC
 
 jobs:
   build:
