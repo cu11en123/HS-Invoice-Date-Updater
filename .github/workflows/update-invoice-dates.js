@@ -6,7 +6,8 @@
  *  - Finds draft invoices with invoice date BEFORE today (7:00 PM UTC)
  *  - Sets invoice date to today (7:00 PM UTC)
  *  - Updates due date so the term (due - original invoice date) is preserved (in whole days)
- *  - If estimated_invoice_date_field is empty, set it to the original invoice date (aligned to 7:00 PM UTC)
+ *  - If estimated_invoice_date_field is empty, set it to the original invoice date (aligned to UTC MIDNIGHT,
+ *    because estimated_invoice_date_field is a HubSpot "date" property, which must be midnight UTC)
  *
  * Config:
  *  - TEST_MODE = true (keeps behavior same as requested)
@@ -113,6 +114,12 @@ function parseHubspotDate(value) {
 function toUtc7pmMs(d) {
   const date = new Date(d);
   return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) + 19 * 3600 * 1000;
+}
+
+// Convert a Date (or date-like) to the day's MIDNIGHT UTC ms (for HubSpot date properties)
+function utcMidnightMsForDate(d) {
+  const date = new Date(d);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
 }
 
 // ---------- Main flow ----------
@@ -232,14 +239,17 @@ async function run() {
     const estimatedFilled = props.estimated_invoice_date_field && String(props.estimated_invoice_date_field).trim() !== '';
 
     const newProps = {
-      // send epoch ms (numbers) for HubSpot date properties
+      // send epoch ms (numbers) for HubSpot date/datetime properties
       hs_invoice_date: newInvoiceMs,
       hs_due_date: newDueMs,
     };
 
     if (!estimatedFilled) {
-      // store original invoice date (aligned to 7:00 PM UTC) as epoch ms
-      newProps.estimated_invoice_date_field = origInvMidMs;
+      // IMPORTANT: estimated_invoice_date_field is a HubSpot "date" property (date-only).
+      // HubSpot requires the epoch ms to be at UTC midnight for that date.
+      // Use the original invoice date's UTC *midnight* ms (not 7pm).
+      const origInvoiceUtcMidnightMs = utcMidnightMsForDate(origInvDate);
+      newProps.estimated_invoice_date_field = origInvoiceUtcMidnightMs;
     }
 
     return {
