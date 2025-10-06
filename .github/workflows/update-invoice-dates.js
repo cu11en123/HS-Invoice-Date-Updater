@@ -4,7 +4,7 @@
  *
  * Behavior:
  *  - Finds draft invoices with invoice date BEFORE today (7:00 PM UTC)
- *  - Sets invoice date to today (7:00 PM UTC)
+ *  - Sets invoice date to the following date at 03:59 UTC (per request)
  *  - Updates due date so the term (due - original invoice date) is preserved (in whole days)
  *  - If estimated_invoice_date_field is empty, set it to the original invoice date (aligned to UTC MIDNIGHT,
  *    because estimated_invoice_date_field is a HubSpot "date" property, which must be midnight UTC)
@@ -122,6 +122,19 @@ function utcMidnightMsForDate(d) {
   return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
 }
 
+// --- NEW: target time helpers ---
+// Return milliseconds for the **following date** at 03:59 UTC (this is the new invoice datetime)
+function targetNextDay039UtcMsForDate(d = new Date()) {
+  const date = new Date(d);
+  // UTC next-day at 03:59:00
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1, 3, 59, 0);
+}
+
+function targetNextDay039UtcIsoForDate(d = new Date()) {
+  const ms = targetNextDay039UtcMsForDate(d);
+  return new Date(ms).toISOString();
+}
+
 // ---------- Main flow ----------
 
 async function run() {
@@ -130,12 +143,17 @@ async function run() {
 
   const DAY_MS = 24 * 3600 * 1000;
 
-  // Get today's 7 PM UTC for setting new invoice dates
+  // Get today's 7 PM UTC for search cutoff (unchanged behavior)
   const todayUtc7pmMs = utc7pmMsForDate(new Date());
   const todayUtc7pmIso = new Date(todayUtc7pmMs).toISOString();
-  console.log(`Today (7:00 PM UTC): ${todayUtc7pmIso}`);
+  console.log(`Today cutoff (7:00 PM UTC): ${todayUtc7pmIso}`);
 
-  // Use today's 7 PM UTC as the cutoff for the search
+  // --- NEW: compute the new invoice timestamp: following date at 03:59 UTC ---
+  const invoiceTargetMs = targetNextDay039UtcMsForDate(new Date());
+  const invoiceTargetIso = new Date(invoiceTargetMs).toISOString();
+  console.log(`New invoice datetime (following date at 03:59 UTC): ${invoiceTargetIso}`);
+
+  // Use today's 7 PM UTC as the cutoff for the search (invoices before this will be updated)
   const searchCutoffMs = todayUtc7pmMs;
   console.log(`Search cutoff: ${new Date(searchCutoffMs).toISOString()} (invoices before this will be updated)`);
 
@@ -210,7 +228,7 @@ async function run() {
     return {
       updated: 0,
       total: 0,
-      dateSet: new Date(todayUtc7pmMs).toISOString().slice(0, 10),
+      dateSet: new Date(invoiceTargetMs).toISOString().slice(0, 10),
       errors: undefined,
     };
   }
@@ -227,14 +245,16 @@ async function run() {
     const origInvDate = parseHubspotDate(origInvRaw) || new Date(todayUtc7pmMs);
     const origDueDate = parseHubspotDate(origDueRaw) || new Date(toUtc7pmMs(origInvDate) + DAY_MS);
 
+    // Preserve original term (in whole days). Keep using the original 7:00 PM anchor for term calc
     const origInvMidMs = toUtc7pmMs(origInvDate);
     const origDueMidMs = toUtc7pmMs(origDueDate);
 
     const termMs = Math.max(origDueMidMs - origInvMidMs, 0);
     const termDays = Math.round(termMs / DAY_MS); // integer days
 
-    const newDueMs = todayUtc7pmMs + termDays * DAY_MS;
-    const newInvoiceMs = todayUtc7pmMs; // epoch ms for today at 7:00 PM UTC
+    // NEW: set invoice to the following date at 03:59 UTC and set due date preserving termDays
+    const newInvoiceMs = invoiceTargetMs;
+    const newDueMs = invoiceTargetMs + termDays * DAY_MS;
 
     const estimatedFilled = props.estimated_invoice_date_field && String(props.estimated_invoice_date_field).trim() !== '';
 
@@ -323,7 +343,8 @@ async function run() {
   const summary = {
     updated: successCount,
     total: updates.length,
-    dateSet: new Date(todayUtc7pmMs).toISOString().slice(0, 10),
+    // dateSet is the ISO date (YYYY-MM-DD) of the target new invoice datetime
+    dateSet: new Date(invoiceTargetMs).toISOString().slice(0, 10),
     errors: errors.length ? errors : undefined,
     successRate: updates.length ? `${Math.round((successCount / updates.length) * 100)}%` : '0%',
   };
