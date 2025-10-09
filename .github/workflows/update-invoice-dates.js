@@ -1,3 +1,4 @@
+// (full file — only the update block logic has been changed)
 /**
  * update-invoice-dates.js
  * Node 18+ standalone script
@@ -256,7 +257,9 @@ async function run() {
     const newInvoiceMs = invoiceTargetMs;
     const newDueMs = invoiceTargetMs + termDays * DAY_MS;
 
-    const estimatedFilled = props.estimated_invoice_date_field && String(props.estimated_invoice_date_field).trim() !== '';
+    // ======= ROBUST CHECK: consider estimated filled only if it parses to a valid date =======
+    const estimatedParsed = parseHubspotDate(props.estimated_invoice_date_field);
+    const estimatedFilled = estimatedParsed !== null;
 
     const newProps = {
       // send epoch ms (numbers) for HubSpot date/datetime properties
@@ -264,6 +267,7 @@ async function run() {
       hs_due_date: newDueMs,
     };
 
+    // Only set estimated_invoice_date_field when it truly does not exist (i.e. parseHubspotDate returned null)
     if (!estimatedFilled) {
       // IMPORTANT: estimated_invoice_date_field is a HubSpot "date" property (date-only).
       // HubSpot requires the epoch ms to be at UTC midnight for that date.
@@ -282,12 +286,14 @@ async function run() {
   // For debugging, list ids and new date ms values (do not print full payload for privacy)
   console.log(
     'Prepared updates (id, hs_invoice_date_ms, hs_due_date_ms, estimated_invoice_date_field_ms if set):',
-    updates.map((u) => ({
+    updates.map((u) => (({
       id: u.id,
       hs_invoice_date: u.properties.hs_invoice_date,
       hs_due_date: u.properties.hs_due_date,
-      estimated_invoice_date_field: u.properties.estimated_invoice_date_field,
-    }))
+      estimated_invoice_date_field: Object.prototype.hasOwnProperty.call(u.properties, 'estimated_invoice_date_field')
+        ? u.properties.estimated_invoice_date_field
+        : undefined,
+    })))
   );
 
   // ------------- Batch update -------------
